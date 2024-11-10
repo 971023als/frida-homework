@@ -1,34 +1,3 @@
-/*
-    Frida Script for Android Application Instrumentation
-	------------ One Rule to Rule Them All -------------
-
-    Description:
-    This script dynamically instruments Android applications using Frida to bypass security checks,
-    root detection, debugger detection, and alter network information.
-
-    Functionalities:
-    1. Bypasses security checks by returning fake values for settings providers.
-    2. Masks root detection mechanisms in PackageManager and file existence checks.
-    3. Prevents debugger detection by always returning false.
-    4. Masks system properties related to root detection.
-    5. Filters command execution to bypass root detection or return fake results.
-    6. Modifies file read operations to replace test-keys with release-keys.
-    7. Intercepts native functions like fopen and system to bypass root checks.
-    8. Alters network information retrieval to simulate a connected LTE mobile network.
-    9. Overrides network capabilities check to always indicate availability of mobile network.
-	10. Bypass all ssl certificate
-
-    Usage:
-    - Run this script within a Frida environment targeting the Android application to be instrumented.
-    - Adjust code as needed based on the specific context or changes in the target application.
-	
-	frida --codeshare h4rithd/onerule-by-h4rithd -f YOUR_BINARY
-	frida -U -l onerule.js -f YOUR_BINARY
-
-    Author: Harith Dilshan | h4rithd.com
-    Date: 22-March-2024
-*/
-
 Java.perform(function() {
     var tries = 0;
     var maxTries = 5;
