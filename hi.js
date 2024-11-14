@@ -1,9 +1,9 @@
 Java.perform(function () {
     console.log("🛡️ 고급 보안 모니터링 및 디버깅 방지 설정 시작...");
 
-    const DEBUG = false;  // 디버깅 모드 설정
-    const MAX_RETRY = 3;  // 최대 재시도 횟수 설정
-    const RETRY_DELAY = 3000;  // 재시도 지연 시간 (밀리초)
+    const DEBUG = false;
+    const MAX_RETRY = 3;
+    const RETRY_DELAY = 3000;
 
     const interceptorCache = {};
     const callCounts = {
@@ -16,7 +16,6 @@ Java.perform(function () {
         후킹실패: 0
     };
 
-    // Interceptor를 설정하여 메모리 접근 보호
     function attachInterceptor(libName, funcName, onEnterCallback) {
         const key = `${libName}:${funcName}`;
         if (interceptorCache[key]) return;
@@ -82,7 +81,65 @@ Java.perform(function () {
                 callCounts.후킹실패++;
             }
         });
+        
+        // Activity.finish() 오버로드 후킹
+        const Activity = Java.use("android.app.Activity");
+        try {
+            Activity.finish.overload().implementation = function () {
+                console.log("⛔️ Activity.finish() 호출 차단");
+                callCounts.종료차단++;
+            };
+            console.log("✅ Activity.finish() 후킹 성공");
+        } catch (e) {
+            if (DEBUG) console.log(`⚠️ Activity.finish() 후킹 실패: ${e.message}`);
+        }
+
+        try {
+            Activity.finish.overload('int').implementation = function (code) {
+                console.log(`⛔️ Activity.finish(int) 호출 차단. 종료 코드: ${code}`);
+                callCounts.종료차단++;
+            };
+            console.log("✅ Activity.finish(int) 후킹 성공");
+        } catch (e) {
+            if (DEBUG) console.log(`⚠️ Activity.finish(int) 후킹 실패: ${e.message}`);
+        }
+
+        // 네이티브 종료 함수 후킹 추가
+        console.log("🛡️ 네이티브 종료 함수 후킹 설정 중...");
+        attachInterceptor("libc.so", "kill", function (args) {
+            console.log(`⛔️ kill 호출 차단. PID: ${args[0]}, Signal: ${args[1]}`);
+            callCounts.종료차단++;
+            args[1] = 0;  // 신호를 0으로 변경하여 무력화
+        });
+        attachInterceptor("libc.so", "exit", function (args) {
+            console.log("⛔️ exit 호출 차단");
+            callCounts.종료차단++;
+        });
+        attachInterceptor("libc.so", "abort", function (args) {
+            console.log("⛔️ abort 호출 차단");
+            callCounts.종료차단++;
+        });
+        attachInterceptor("libc.so", "exitGroup", function (args) {
+            console.log("⛔️ exitGroup 호출 차단");
+            callCounts.종료차단++;
+        });
+        console.log("🛡️ 네이티브 종료 함수 후킹 설정 완료.");
+        
         console.log("🛡️ 프로세스 종료 방지 후킹 설정 완료.");
+    }
+
+    // Anti-debugging, ptrace 무력화
+    function disableAntiDebug() {
+        try {
+            attachInterceptor("libc.so", "ptrace", function (args) {
+                console.log("⛔️ ptrace 호출 차단");
+                callCounts.종료차단++;
+                args[0] = 0;  // 무력화
+            });
+            console.log("🛡️ ptrace 후킹 성공");
+        } catch (e) {
+            if (DEBUG) console.log(`⚠️ ptrace 후킹 실패: ${e.message}`);
+        }
     }
 
     function detectNativeLinkError() {
@@ -103,6 +160,7 @@ Java.perform(function () {
     // 메인 보안 우회 설정
     setupMemoryProtectionHooks();
     preventProcessTermination();
+    disableAntiDebug();
     detectNativeLinkError();
 
     console.log("=== 모든 보안 우회 후킹 및 보호 패턴 적용 완료 ===");
