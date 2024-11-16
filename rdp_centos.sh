@@ -25,7 +25,7 @@ WriteLog "실행 중인 프로세스 목록 수집 중..."
 ps aux >> "$logFilePath"
 
 WriteLog "네트워크 연결 상태 수집 중..."
-netstat -an >> "$logFilePath"
+ss -tuln >> "$logFilePath"
 
 WriteLog "현재 사용자의 권한 정보 수집 중..."
 id -a >> "$logFilePath"
@@ -34,7 +34,7 @@ id -a >> "$logFilePath"
 WriteLog "이벤트 로그 분석 중..."
 journalctl -p err >> "$logFilePath"
 
-# 3. 레지스트리 키 분석 (Linux에는 없음 - 비슷한 기능 예시)
+# 3. 자동 시작 프로그램 분석
 WriteLog "시작 프로그램 목록 분석 중..."
 if [ -d "/etc/xdg/autostart" ]; then
     ls -l /etc/xdg/autostart >> "$logFilePath"
@@ -53,9 +53,10 @@ WriteLog "숨김 파일 분석 중..."
 find / -type f -name ".*" 2>/dev/null >> "$logFilePath"
 
 # 5. 네트워크 로그 분석
-firewallLogPath="/var/log/ufw.log"
-if [ -f "$firewallLogPath" ]; then
+firewallLogPath="/var/log/firewalld"
+if [ -d "$firewallLogPath" ]; then
     WriteLog "방화벽 로그 확인됨: $firewallLogPath"
+    cat "$firewallLogPath"/* >> "$logFilePath"
 else
     WriteLog "방화벽 로그를 찾을 수 없음: $firewallLogPath"
 fi
@@ -63,6 +64,12 @@ fi
 # 6. 사용자 계정 분석
 WriteLog "사용자 계정 분석 중..."
 cat /etc/passwd >> "$logFilePath"
+
+# 7. 시스템 정보 수집
+WriteLog "시스템 정보 수집 중..."
+uname -a >> "$logFilePath"
+df -h >> "$logFilePath"
+uptime >> "$logFilePath"
 
 # 로그 종료
 WriteLog "==== 침해사고 분석 종료 ===="
